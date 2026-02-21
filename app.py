@@ -1,31 +1,29 @@
 """
-Smart-Support Ticket Routing Engine - Main Application
-FastAPI REST API for ticket submission and management
+Smart-Support Ticket Routing Engine — Milestone 2 API
+Async broker pattern (API → Queue → Worker)
 """
+
 import uuid
-from datetime import datetime
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, status, HTTPException
 from pydantic import BaseModel, Field
-import time
+from datetime import datetime, UTC
+from typing import Dict, List, Optional
 
-# Import ML modules
-from ml.classifier import BaselineClassifier
-from queue.priority_queue import PriorityQueue, Ticket
-from routing.skill_routing import AgentRegistry, TicketRequest
+# Broker
+from broker.async_broker import async_broker
 
-# Initialize components
-classifier = BaselineClassifier()
-ticket_queue = PriorityQueue()
-agent_registry = AgentRegistry()
+# Connect broker safely
+async_broker.connect()
 
 app = FastAPI(
     title="Smart-Support Ticket Routing Engine",
-    description="Intelligent ticket routing with ML-based categorization and agent assignment",
-    version="1.0.0"
+    version="2.0.0"
 )
 
-# ============ Models ============
+# ================= TEMP STORE (for GET endpoints) =================
+tickets_store: Dict[str, dict] = {}
+
+# ================= MODELS =================
 
 class TicketCreate(BaseModel):
     subject: str = Field(..., min_length=1, max_length=500)
@@ -33,20 +31,19 @@ class TicketCreate(BaseModel):
     customer_id: str = Field(..., min_length=1)
 
 
+class AcceptedResponse(BaseModel):
+    ticket_id: str
+    status: str
+    message: str
+
+
 class TicketResponse(BaseModel):
     ticket_id: str
     subject: str
     description: str
-    category: str
-    urgency: float
-    priority: float
     status: str
-    created_at: datetime
+    created_at: str
     customer_id: str
-
-
-class TicketPriorityUpdate(BaseModel):
-    new_priority: float = Field(..., ge=0, le=1)
 
 
 class TicketListResponse(BaseModel):
@@ -54,162 +51,134 @@ class TicketListResponse(BaseModel):
     total: int
 
 
-class HealthResponse(BaseModel):
-    status: str
-    version: str
-    queue_size: int
+class PriorityUpdate(BaseModel):
+    priority: float = Field(..., ge=0, le=1)
 
 
-class AgentCreate(BaseModel):
-    name: str = Field(..., min_length=1)
-    skills: dict
-    capacity: int = Field(default=5, ge=1, le=20)
-
-
-class AgentResponse(BaseModel):
-    agent_id: str
-    name: str
-    skills: dict
-    capacity: int
-    current_load: int
-
-
-# ============ Root ============
+# ================= ROOT =================
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to Smart-Support Ticket Routing Engine", "docs": "/docs"}
+    return {"message": "Smart-Support Async Router", "docs": "/docs"}
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    return HealthResponse(status="healthy", version="1.0.0", queue_size=ticket_queue.size())
+@app.get("/health")
+async def health():
+    size = async_broker.get_queue_size()   # ✅ FIXED
+    return {"status": "healthy", "queue_size": size}
 
 
-# ============ Ticket Create ============
+# ================= CREATE TICKET =================
 
-@app.post("/api/tickets", response_model=TicketResponse, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/api/tickets",
+    response_model=AcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED
+)
 async def create_ticket(ticket_data: TicketCreate):
-    text = f"{ticket_data.subject} {ticket_data.description}"
-
-    category, urgency = classifier.classify(text)
 
     ticket_id = f"TKT-{uuid.uuid4().hex[:8].upper()}"
 
-    ticket = Ticket(
-        priority=urgency,
-        timestamp=time.time(),
+    payload = {
+        "ticket_id": ticket_id,
+        "subject": ticket_data.subject,
+        "description": ticket_data.description,
+        "metadata": {"customer_id": ticket_data.customer_id},
+        "created_at": datetime.now(UTC).isoformat()
+    }
+
+    # publish to queue
+    async_broker.publish_ticket(payload)
+
+    # store basic info so GET works
+    tickets_store[ticket_id] = {
+        **payload,
+        "status": "queued",
+        "priority": None
+    }
+
+    return AcceptedResponse(
         ticket_id=ticket_id,
-        subject=ticket_data.subject,
-        description=ticket_data.description,
-        category=category.value,
-        urgency=urgency,
-        status="pending",
-        metadata={"customer_id": ticket_data.customer_id}
-    )
-
-    ticket_queue.enqueue(ticket)
-
-    return TicketResponse(
-        ticket_id=ticket.ticket_id,
-        subject=ticket.subject,
-        description=ticket.description,
-        category=ticket.category,
-        urgency=ticket.urgency,
-        priority=-ticket.priority,
-        status=ticket.status,
-        created_at=ticket.created_at,
-        customer_id=ticket_data.customer_id
+        status="accepted",
+        message="Ticket queued for background processing"
     )
 
 
-# ============ List Tickets ============
+# ================= LIST =================
 
 @app.get("/api/tickets", response_model=TicketListResponse)
 async def list_tickets(status_filter: Optional[str] = None):
-    tickets = ticket_queue.get_all()
+
+    data = list(tickets_store.values())
 
     if status_filter:
-        tickets = [t for t in tickets if t.status == status_filter]
+        data = [t for t in data if t["status"] == status_filter]
 
-    responses = [
-        TicketResponse(
-            ticket_id=t.ticket_id,
-            subject=t.subject,
-            description=t.description,
-            category=t.category,
-            urgency=t.urgency,
-            priority=-t.priority,
-            status=t.status,
-            created_at=t.created_at,
-            customer_id=t.metadata.get("customer_id", "unknown")
-        )
-        for t in tickets
-    ]
-
-    return TicketListResponse(tickets=responses, total=len(responses))
+    return TicketListResponse(
+        tickets=[
+            TicketResponse(
+                ticket_id=t["ticket_id"],
+                subject=t["subject"],
+                description=t["description"],
+                status=t["status"],
+                created_at=t["created_at"],
+                customer_id=t["metadata"]["customer_id"]
+            )
+            for t in data
+        ],
+        total=len(data)
+    )
 
 
-# ============ GET Ticket ============
+# ================= GET ONE =================
 
 @app.get("/api/tickets/{ticket_id}", response_model=TicketResponse)
 async def get_ticket(ticket_id: str):
-    ticket = ticket_queue.get_by_id(ticket_id)
+
+    ticket = tickets_store.get(ticket_id)
 
     if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+        raise HTTPException(404, "Ticket not found")
 
     return TicketResponse(
-        ticket_id=ticket.ticket_id,
-        subject=ticket.subject,
-        description=ticket.description,
-        category=ticket.category,
-        urgency=ticket.urgency,
-        priority=-ticket.priority,
-        status=ticket.status,
-        created_at=ticket.created_at,
-        customer_id=ticket.metadata.get("customer_id", "unknown")
+        ticket_id=ticket["ticket_id"],
+        subject=ticket["subject"],
+        description=ticket["description"],
+        status=ticket["status"],
+        created_at=ticket["created_at"],
+        customer_id=ticket["metadata"]["customer_id"]
     )
 
 
-# ============ DELETE ============
+# ================= UPDATE PRIORITY =================
 
-@app.delete("/api/tickets/{ticket_id}", status_code=204)
+@app.put("/api/tickets/{ticket_id}/priority")
+async def update_priority(ticket_id: str, data: PriorityUpdate):
+
+    ticket = tickets_store.get(ticket_id)
+
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+
+    ticket["priority"] = data.priority
+
+    return {"message": "priority updated", "ticket_id": ticket_id}
+
+
+# ================= DELETE =================
+
+@app.delete("/api/tickets/{ticket_id}")
 async def delete_ticket(ticket_id: str):
-    ticket = ticket_queue.get_by_id(ticket_id)
 
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket_id not in tickets_store:
+        raise HTTPException(404, "Ticket not found")
 
-    ticket.status = "cancelled"
+    tickets_store[ticket_id]["status"] = "cancelled"
 
-
-# ============ ⭐ FIXED PRIORITY ENDPOINT ============
-
-@app.put("/api/tickets/{ticket_id}/priority", response_model=TicketResponse)
-async def update_ticket_priority(ticket_id: str, data: TicketPriorityUpdate):
-
-    success = ticket_queue.update_priority(ticket_id, data.new_priority)
-
-    if not success:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-
-    ticket = ticket_queue.get_by_id(ticket_id)
-
-    return TicketResponse(
-        ticket_id=ticket.ticket_id,
-        subject=ticket.subject,
-        description=ticket.description,
-        category=ticket.category,
-        urgency=ticket.urgency,
-        priority=-ticket.priority,
-        status=ticket.status,
-        created_at=ticket.created_at,
-        customer_id=ticket.metadata.get("customer_id", "unknown")
-    )
+    return {"message": "ticket cancelled"}
 
 
-# ============ Run ============
+# ================= RUN =================
 
 if __name__ == "__main__":
     import uvicorn

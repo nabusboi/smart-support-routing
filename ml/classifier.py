@@ -119,3 +119,17 @@ class BaselineClassifier:
 
 # Singleton instance
 classifier = BaselineClassifier()
+
+
+def score_urgency(text: str) -> float:
+    """
+    Score urgency using baseline classifier.
+    This is the fallback function used when transformer is too slow.
+    
+    Args:
+        text: The ticket text content
+        
+    Returns:
+        Urgency score between 0 and 1
+    """
+    return classifier._detect_urgency(text)
