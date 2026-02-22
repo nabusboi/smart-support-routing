@@ -31,18 +31,13 @@ An intelligent, high-performance ticket routing system that uses **Machine Learn
 pip install -r requirements.txt
 ```
 
-### 2. Train the ML Model
-```bash
-python ml/train.py
-```
-
-### 3. Run the Backend
+### 2. Run the Backend
 ```bash
 python app.py
 ```
-*API will be available at `http://localhost:8001`*
+*API will be available at `http://localhost:8001`. The ML model will be trained automatically on first run.*
 
-### 4. Run the Frontend
+### 3. Run the Frontend
 ```bash
 cd frontend
 npm install

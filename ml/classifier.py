@@ -44,7 +44,16 @@ class TicketClassifier:
         self.model = self._load_model()
     
     def _load_model(self) -> Optional[object]:
-        """Load the trained ML model if available."""
+        """Load the trained ML model, training it if not found."""
+        if not os.path.exists(self.MODEL_PATH):
+            print("ML model not found. Training now...")
+            try:
+                from ml.train import train_model
+                train_model()
+            except Exception as e:
+                print(f"Error training ML model: {e}")
+                return None
+
         if os.path.exists(self.MODEL_PATH):
             try:
                 return joblib.load(self.MODEL_PATH)
