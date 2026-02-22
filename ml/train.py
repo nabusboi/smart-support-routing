@@ -21,6 +21,11 @@ DATA = [
     ("Pricing for the premium tier", "Billing"),
     ("Coupon code not working at checkout", "Billing"),
     ("Renewal date for my plan", "Billing"),
+    ("Small issue on my finance handling", "Billing"),
+    ("Finance department contact", "Billing"),
+    ("Bank transfer not received", "Billing"),
+    ("Billing address update", "Billing"),
+    ("Account balance discrepancy", "Billing"),
     
     # Technical
     ("The server is down and I can't login", "Technical"),
@@ -35,6 +40,12 @@ DATA = [
     ("Integration setup for third-party tools", "Technical"),
     ("Stack trace error on page load", "Technical"),
     ("Feature request: Dark mode in the UI", "Technical"),
+    ("Problems in pip installs", "Technical"),
+    ("NPM install failing on windows", "Technical"),
+    ("Python environment setup error", "Technical"),
+    ("Regarding installation on node", "Technical"),
+    ("Dependency conflict during build", "Technical"),
+    ("How to configure the development environment", "Technical"),
     
     # Legal
     ("I have a question about the privacy policy", "Legal"),

@@ -39,6 +39,21 @@ class TicketClassifier:
         (r"\b(whenever|when you can|low priority|no rush|fyi|question)\b", 0.2),
     ]
     
+    # High-confidence keyword matching to reinforce or override ML predictions
+    CATEGORY_KEYWORDS = {
+        TicketCategory.TECHNICAL: [
+            r"install", r"pip", r"npm", r"bug", r"crash", r"error", r"api", 
+            r"server", r"down", r"setup", r"python", r"node", r"build"
+        ],
+        TicketCategory.BILLING: [
+            r"invoice", r"payment", r"refund", r"billing", r"finance", 
+            r"charge", r"subscription", r"pricing", r"transaction", r"bank"
+        ],
+        TicketCategory.LEGAL: [
+            r"privacy", r"gdpr", r"terms", r"legal", r"compliance", r"license"
+        ]
+    }
+    
     def __init__(self):
         self.categories = list(TicketCategory)
         self.model = self._load_model()
@@ -64,25 +79,51 @@ class TicketClassifier:
     def classify(self, text: str) -> Tuple[TicketCategory, float]:
         """
         Classify ticket into category and detect urgency.
+        Uses a hybrid approach of ML and keyword reinforcement.
         """
-        category = TicketCategory.GENERAL
+        text_lower = text.lower()
+        ml_category = TicketCategory.GENERAL
         
-        # 1. Use ML Model Classification
+        # 1. Get ML Model Prediction
         if self.model:
             try:
                 prediction = self.model.predict([text])[0]
-                # Convert string prediction back to Enum
                 for cat in TicketCategory:
                     if cat.value.lower() == prediction.lower():
-                        category = cat
+                        ml_category = cat
                         break
             except Exception as e:
                 print(f"ML Prediction failed: {e}")
         
-        # 2. Detect urgency using refined continuous logic
-        urgency = self._detect_urgency(text, category)
+        # 2. Keyword Reinforcement (Boost or Override)
+        final_category = ml_category
+        keyword_matches = {}
         
-        return category, urgency
+        for category, patterns in self.CATEGORY_KEYWORDS.items():
+            matches = sum(1 for p in patterns if re.search(p, text_lower))
+            if matches > 0:
+                keyword_matches[category] = matches
+        
+        # If the ML model says "General" but we have strong keyword matches, override it
+        if ml_category == TicketCategory.GENERAL and keyword_matches:
+            final_category = max(keyword_matches, key=keyword_matches.get)
+        # If ML model predicted something but keywords strongly suggest otherwise, we could override
+        # For now, we prefer keywords if ML is "General", or if they agree.
+        elif ml_category in keyword_matches and keyword_matches[ml_category] > 0:
+            final_category = ml_category
+        elif keyword_matches:
+            # If ML and Keywords disagree and ML isn't General, 
+            # we check if keywords are significantly stronger
+            best_keyword_cat = max(keyword_matches, key=keyword_matches.get)
+            if keyword_matches[best_keyword_cat] >= 2: # High confidence
+                final_category = best_keyword_cat
+                
+        print(f"Classification: ML={ml_category.value}, Keywords={list(keyword_matches.keys())}, Final={final_category.value}")
+
+        # 3. Detect urgency using refined continuous logic
+        urgency = self._detect_urgency(text, final_category)
+        
+        return final_category, urgency
     
     def _detect_urgency(self, text: str, category: TicketCategory = TicketCategory.GENERAL) -> float:
         """
