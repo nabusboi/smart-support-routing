@@ -1,0 +1,298 @@
+================================================================================
+                    SMART-SUPPORT TICKET ROUTING ENGINE
+                          FEATURES GUIDE & TESTING
+================================================================================
+
+This document explains the three main features implemented and how to test them
+through the frontend.
+
+================================================================================
+1. CIRCUIT BREAKER (routing/circuit_breaker.py)
+================================================================================
+
+PURPOSE:
+--------
+Automatic failover between ML models based on performance metrics.
+
+STATES:
+-------
+- CLOSED   → Normal operation (Transformer model active)
+- OPEN     → Failing/rejecting requests (fallback to baseline)  
+- HALF_OPEN → Testing recovery
+
+TRIGGERS FOR OPEN STATE:
+------------------------
+- 5+ consecutive failures
+- Average latency > 500ms over last 10 requests
+- 30 second timeout before attempting reset
+
+HOW IT WORKS:
+------------
+1. When circuit is CLOSED, requests go to Transformer model
+2. If latency exceeds 500ms or 5 failures occur, circuit OPENs
+3. When OPEN, requests automatically fallback to baseline classifier
+4. After 30 seconds, circuit enters HALF_OPEN to test recovery
+5. If 2 successful requests, circuit returns to CLOSED
+
+TESTING VIA FRONTEND:
+--------------------
+1. Open the frontend (http://localhost:5173)
+2. Go to "ML Insights" tab
+3. View Circuit Breaker Details panel:
+   - Shows current state (CLOSED/OPEN/HALF_OPEN)
+   - Shows failure count and success count
+   - Shows average latency vs 500ms threshold
+   - Shows time until reset attempt (when OPEN)
+4. Click "Toggle" button in Queue Monitor to manually switch states
+5. Create tickets and observe the circuit breaker state changes
+
+API ENDPOINT:
+------------
+GET /api/circuit-breaker/stats
+Returns:
+{
+  "name": "transformer",
+  "state": "closed|open|half_open",
+  "failure_count": 0,
+  "success_count": 0,
+  "average_latency_ms": 120.5,
+  "latency_threshold_ms": 500,
+  "failure_threshold": 5,
+  "timeout_seconds": 30.0,
+  "time_until_reset_seconds": 0,
+  "is_available": true
+}
+
+================================================================================
+2. AGENT ROUTING (routing/skill_routing.py)
+================================================================================
+
+PURPOSE:
+--------
+Route tickets to the best-matching agent based on skills and capacity.
+
+AGENT STRUCTURE:
+---------------
+Each agent has:
+- name: Agent's name
+- skills: Dict[str, float] - Skill proficiency scores (0-1)
+  Example: {"billing": 0.9, "technical": 0.7, "legal": 0.3}
+- capacity: Maximum concurrent tickets (default: 5)
+- current_load: Current number of assigned tickets
+
+ROUTING LOGIC:
+-------------
+1. Ticket category is matched to agent skill with highest score
+2. Agent must have available capacity (current_load < capacity)
+3. Score calculation considers:
+   - Skill match weight (70%): How well skills match ticket category
+   - Urgency weight (30%): Higher urgency = more important skill match
+   - Load factor: Prefer agents with less current load
+
+HOW IT WORKS:
+------------
+1. Ticket is created with category (Billing, Technical, Legal, General)
+2. System finds all available agents (status=AVAILABLE, load<capacity)
+3. For each agent, calculates score based on:
+   - skill_match: Average of required skills proficiency
+   - load_factor: 1 - (current_load / capacity)
+   - score = (skill_match * urgency_weight) + (load_factor * (1-urgency_weight))
+4. Ticket is assigned to agent with highest score
+5. Agent's current_load increases by 1
+
+TESTING VIA FRONTEND:
+--------------------
+1. Open the frontend (http://localhost:5173)
+2. Go to "Agent Panel" tab
+3. Click "Register Agent" to create new agents:
+   - Enter agent name
+   - Set skill levels (0-100%) for billing, technical, legal
+   - Set capacity (max tickets)
+4. Click "Routing History" button to view:
+   - All ticket→agent assignments
+   - Routing score for each assignment
+   - Timestamp of each assignment
+   - Total assignments count
+
+API ENDPOINTS:
+--------------
+GET /api/agents
+Returns list of all registered agents
+
+POST /api/agents/register
+{
+  "name": "Agent Smith",
+  "skills": {"billing": 0.9, "technical": 0.5, "legal": 0.3},
+  "capacity": 5
+}
+
+GET /api/agents/history?limit=20
+Returns:
+{
+  "history": [
+    {
+      "ticket_id": "TKT-ABC123",
+      "agent_id": "uuid...",
+      "agent_name": "Agent Smith",
+      "score": 0.85,
+      "timestamp": "2024-01-15T10:30:00"
+    }
+  ],
+  "total_assignments": 15
+}
+
+GET /api/agents/stats
+Returns:
+{
+  "total_agents": 3,
+  "available_agents": 2,
+  "total_current_load": 5,
+  "total_capacity": 15,
+  "utilization": 0.33
+}
+
+================================================================================
+3. ASYNC BROKER (broker/async_broker.py)
+================================================================================
+
+PURPOSE:
+--------
+Redis-based message queue for async ticket processing.
+
+ARCHITECTURE:
+------------
+- Uses Redis Lists and Sets for queue management
+- Connects to Redis at localhost:6379
+
+QUEUE OPERATIONS:
+----------------
+1. publish_ticket() - Push ticket to main queue (LPUSH)
+2. consume_ticket() - Pop ticket for processing (BRPOPLPUSH)
+3. complete_ticket() - Mark as completed (move to completed set)
+4. fail_ticket() - Move to dead letter queue on failure
+
+REDIS KEYS:
+-----------
+- tickets:queue       → Main ticket queue (List)
+- tickets:processing → Currently processing tickets (Set)
+- tickets:completed  → Completed tickets (Set)
+- tickets:dead_letter → Failed tickets (List)
+
+HOW IT WORKS:
+------------
+1. Ticket created via API → pushed to tickets:queue
+2. Worker consumes ticket → moved to tickets:processing
+3. Worker completes task → moved to tickets:completed
+4. Worker fails task → moved to tickets:dead_letter
+
+TESTING VIA FRONTEND:
+--------------------
+1. Open the frontend (http://localhost:5173)
+2. View Queue Monitor panel (left side):
+   - Shows queue size (pending tickets)
+   - Shows Redis connection status
+3. Go to "Queue Monitor" tab to see detailed stats:
+   - In Queue: tickets waiting to be processed
+   - Processing: currently being handled by workers
+   - Completed: successfully processed
+   - Dead Letter: failed tickets
+
+API ENDPOINT:
+------------
+GET /api/broker/stats
+Returns:
+{
+  "connected": true,
+  "queue_size": 5,
+  "processing_count": 2,
+  "completed_count": 100,
+  "dead_letter_count": 3
+}
+
+Note: If Redis is not connected, shows:
+{
+  "connected": false,
+  "message": "Not connected to Redis",
+  "queue_size": 5,
+  "processing_count": 0,
+  "completed_count": 0,
+  "dead_letter_count": 0
+}
+
+================================================================================
+                        HOW TO RUN AND TEST
+================================================================================
+
+PREREQUISITES:
+--------------
+- Python 3.8+
+- Node.js 18+
+- Redis (optional - works without Redis using in-memory fallback)
+
+STARTING THE APPLICATION:
+------------------------
+Option 1 (Linux/Mac):
+  cd c:/Users/DELL/OneDrive/Desktop/hack_2026
+  ./run_all.sh
+
+Option 2 (Windows):
+  cd c:\Users\DELL\OneDrive\Desktop\hack_2026
+  run_all.bat
+
+This will start:
+- Backend API at http://localhost:8001
+- Frontend at http://localhost:5173
+
+TESTING WORKFLOW:
+-----------------
+1. Open browser to http://localhost:5173
+
+2. CREATE TICKETS:
+   - Fill in subject, description, customer ID
+   - Click Submit
+   - Ticket is classified (Billing/Technical/Legal/General)
+   - Ticket is added to queue
+
+3. TEST CIRCUIT BREAKER:
+   - Go to ML Insights tab
+   - Click "Toggle" in Queue Monitor to force OPEN state
+   - Notice state changes to OPEN (red)
+   - Wait 30 seconds → state changes to HALF_OPEN (yellow)
+   - Click Toggle again → state changes to CLOSED (green)
+
+4. TEST AGENT ROUTING:
+   - Go to Agent Panel tab
+   - Click "Register Agent" 
+   - Create 2-3 agents with different skills
+   - Create tickets (system assigns to best agent)
+   - Click "Routing History" to see assignments
+
+5. TEST ASYNC BROKER:
+   - Create multiple tickets
+   - Go to Queue Monitor tab
+   - Watch processing/completed/dead letter counts
+   - If Redis running, see live Redis updates
+
+API TESTING WITH CURL:
+----------------------
+# Get circuit breaker stats
+curl http://localhost:8001/api/circuit-breaker/stats
+
+# Get agent routing history
+curl http://localhost:8001/api/agents/history
+
+# Get broker queue stats
+curl http://localhost:8001/api/broker/stats
+
+# Get all agents
+curl http://localhost:8001/api/agents
+
+# Create a ticket
+curl -X POST http://localhost:8001/api/tickets \
+  -H "Content-Type: application/json" \
+  -d '{"subject":"Billing issue","description":"My invoice is wrong","customer_id":"CUST001"}'
+
+# Toggle circuit breaker
+curl -X POST http://localhost:8001/api/ml/circuit-breaker/toggle
+
+================================================================================
