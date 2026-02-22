@@ -17,9 +17,10 @@ An intelligent, high-performance ticket routing system that uses **Machine Learn
 ## 🛠️ Tech Stack
 
 - **Backend:** FastAPI (Python)
+- **Frontend:** React, Tailwind CSS (Vite)
 - **Machine Learning:** Scikit-learn, Joblib
 - **Messaging:** Redis
-- **Tooling:** Uvicorn, Pydantic
+- **Tooling:** Uvicorn, Pydantic, Vite
 
 ---
 
@@ -35,11 +36,27 @@ pip install -r requirements.txt
 python ml/train.py
 ```
 
-### 3. Run the Server
+### 3. Run the Backend
 ```bash
 python app.py
 ```
 *API will be available at `http://localhost:8001`*
+
+### 4. Run the Frontend
+```bash
+cd frontend
+npm install
+npm run dev
+```
+*Frontend will be available at `http://localhost:5173`*
+
+### 5. Frontend Deployment
+To build the frontend for production:
+```bash
+cd frontend
+npm run build
+```
+The output will be in `frontend/dist`.
 
 ---
 
