@@ -18,7 +18,7 @@ An intelligent, high-performance ticket routing system that uses **Machine Learn
 
 - **Backend:** FastAPI (Python)
 - **Frontend:** React, Tailwind CSS (Vite)
-- **Machine Learning:** Scikit-learn, Joblib
+- **Machine Learning:** Logistic Regression (Scikit-learn), Joblib
 - **Messaging:** Redis
 - **Tooling:** Uvicorn, Pydantic, Vite
 
