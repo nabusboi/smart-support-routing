@@ -4,7 +4,7 @@ import { Users, User, Clock, TrendingUp, ArrowRight } from 'lucide-react';
 
 const API_BASE = 'http://localhost:8001';
 
-function AgentPanel({ agents: propAgents, apiConnected }) {
+function AgentPanel({ agents: propAgents, apiConnected, onRefresh }) {
   const [agents, setAgents] = useState(propAgents || []);
   const [showRegister, setShowRegister] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
@@ -164,6 +164,7 @@ function AgentPanel({ agents: propAgents, apiConnected }) {
                   });
                   setShowRegister(false);
                   setNewAgent({ name: '', skills: { billing: 0.5, technical: 0.5, legal: 0.5 }, capacity: 5 });
+                  if (onRefresh) onRefresh();
                 } catch (err) {
                   console.error('Error registering agent:', err);
                 }
@@ -222,8 +223,8 @@ function AgentPanel({ agents: propAgents, apiConnected }) {
                       <div
                         key={t.ticket_id}
                         className={`p-2 rounded border flex justify-between items-center text-xs ${t.status === 'active'
-                            ? 'bg-green-500/5 border-green-500/20'
-                            : 'bg-amber-500/5 border-amber-500/20'
+                          ? 'bg-green-500/5 border-green-500/20'
+                          : 'bg-amber-500/5 border-amber-500/20'
                           }`}
                       >
                         <div className="flex flex-col gap-0.5">

@@ -226,8 +226,8 @@ function App() {
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${activeTab === tab.id
-                  ? 'bg-accent-600 text-white shadow-lg shadow-accent-500/30'
-                  : 'bg-dark-800 text-gray-400 hover:bg-dark-700 hover:text-gray-200'
+                ? 'bg-accent-600 text-white shadow-lg shadow-accent-500/30'
+                : 'bg-dark-800 text-gray-400 hover:bg-dark-700 hover:text-gray-200'
                 }`}
             >
               <tab.icon size={18} />
@@ -260,7 +260,7 @@ function App() {
               />
             )}
             {activeTab === 'agents' && (
-              <AgentPanel agents={agents} apiConnected={apiConnected} />
+              <AgentPanel agents={agents} apiConnected={apiConnected} onRefresh={fetchAgents} />
             )}
             {activeTab === 'ml' && (
               <MLInsights insights={mlInsights} apiConnected={apiConnected} circuitBreakerStats={circuitBreakerStats} />

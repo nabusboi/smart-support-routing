@@ -49,6 +49,9 @@ classifier = TicketClassifier()
 
 def _register_default_agents():
     """Register sample agents for skill-based routing on startup"""
+    print("  Initializing agent registry...")
+    
+    # Define your agents here
     sample_agents = [
         {"name": "Alice", "skills": {"billing": 0.9, "technical": 0.3, "legal": 0.1}, "capacity": 3},
         {"name": "Bob", "skills": {"technical": 0.95, "billing": 0.2, "legal": 0.1}, "capacity": 3},
@@ -56,14 +59,24 @@ def _register_default_agents():
         {"name": "Diana", "skills": {"technical": 0.6, "billing": 0.6, "legal": 0.6}, "capacity": 3},  # Generalist
     ]
 
+    # TO ADD NEW AGENTS MANUALLY:
+    # 1. Add them to the list above, OR
+    # 2. Uncomment and use the template below:
+    # 
+    # sample_agents.append({
+    #     "name": "YOUR_NAME", 
+    #     "skills": {"billing": 0.5, "technical": 0.5, "legal": 0.5}, 
+    #     "capacity": 5
+    # })
+
     for agent in sample_agents:
         agent_id = agent_registry.register_agent(
             name=agent["name"],
             skills=agent["skills"],
             capacity=agent["capacity"]
         )
-        is_gen = "⭐ Generalist" if all(v >= settings.GENERALIST_THRESHOLD for v in agent["skills"].values()) else ""
-        print(f"  Registered agent: {agent['name']} ({agent_id[:8]}...) {is_gen}")
+        is_gen = "⭐ Generalist" if agent_registry.get_agent(agent_id).is_generalist() else ""
+        print(f"    - Registered: {agent['name']} ({agent_id[:8]}...) {is_gen}")
 
 _register_default_agents()
 print(f"  {len(agent_registry._agents)} agents ready.\n")
