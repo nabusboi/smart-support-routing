@@ -1,7 +1,7 @@
 """
-Smart-Support Ticket Routing Engine — Milestone 2 API
+Smart-Support Ticket Routing Engine — Milestone 2+3 API
 Async broker pattern (API → Queue → Worker)
-With ML Integration
+With ML Integration, Preemption, Generalist Routing, ETA Timers
 """
 
 import uuid
@@ -9,16 +9,18 @@ import time
 from fastapi import FastAPI, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 # Broker
 from broker.async_broker import async_broker
 
 # ML Models
-from ml.classifier import BaselineClassifier
+from ml.classifier import TicketClassifier
 from routing.circuit_breaker import transformer_circuit, CircuitState
-from routing.skill_routing import agent_registry, TicketRequest
+from routing.skill_routing import agent_registry, TicketRequest, TicketStatus
+
+from config import settings
 
 # Connect broker safely
 try:
@@ -41,7 +43,31 @@ app.add_middleware(
 )
 
 # Initialize ML classifier
-classifier = BaselineClassifier()
+classifier = TicketClassifier()
+
+# ================= REGISTER DEFAULT AGENTS ON STARTUP =================
+
+def _register_default_agents():
+    """Register sample agents for skill-based routing on startup"""
+    sample_agents = [
+        {"name": "Alice", "skills": {"billing": 0.9, "technical": 0.3, "legal": 0.1}, "capacity": 3},
+        {"name": "Bob", "skills": {"technical": 0.95, "billing": 0.2, "legal": 0.1}, "capacity": 3},
+        {"name": "Charlie", "skills": {"legal": 0.9, "billing": 0.3, "technical": 0.1}, "capacity": 3},
+        {"name": "Diana", "skills": {"technical": 0.6, "billing": 0.6, "legal": 0.6}, "capacity": 3},  # Generalist
+    ]
+
+    for agent in sample_agents:
+        agent_id = agent_registry.register_agent(
+            name=agent["name"],
+            skills=agent["skills"],
+            capacity=agent["capacity"]
+        )
+        is_gen = "⭐ Generalist" if all(v >= settings.GENERALIST_THRESHOLD for v in agent["skills"].values()) else ""
+        print(f"  Registered agent: {agent['name']} ({agent_id[:8]}...) {is_gen}")
+
+_register_default_agents()
+print(f"  {len(agent_registry._agents)} agents ready.\n")
+
 
 # ================= TEMP STORE (for GET endpoints) =================
 tickets_store: Dict[str, dict] = {}
@@ -60,6 +86,9 @@ class AcceptedResponse(BaseModel):
     message: str
     category: Optional[str] = None
     urgency: Optional[float] = None
+    eta_seconds: Optional[int] = None
+    assigned_agent: Optional[str] = None
+    preempted_ticket: Optional[str] = None
 
 
 class TicketResponse(BaseModel):
@@ -71,6 +100,10 @@ class TicketResponse(BaseModel):
     customer_id: str
     category: Optional[str] = None
     urgency: Optional[float] = None
+    assigned_agent: Optional[str] = None
+    eta_seconds: Optional[int] = None
+    remaining_eta: Optional[float] = None
+    ticket_status: Optional[str] = None  # active/paused/completed
 
 
 class TicketListResponse(BaseModel):
@@ -108,6 +141,8 @@ class AgentResponse(BaseModel):
     capacity: int
     current_load: int
     status: str
+    is_generalist: Optional[bool] = False
+    assigned_tickets: Optional[List[dict]] = None
 
 
 class AgentStatsResponse(BaseModel):
@@ -116,6 +151,31 @@ class AgentStatsResponse(BaseModel):
     total_load: int
     total_capacity: int
     utilization: float
+    total_preemptions: Optional[int] = 0
+    active_tickets: Optional[int] = 0
+    paused_tickets: Optional[int] = 0
+    generalist_agents: Optional[int] = 0
+
+
+# ================= HELPER: auto-complete expired tickets =================
+
+def _sync_ticket_store():
+    """Sync tickets_store with agent ticket statuses and auto-complete expired ones"""
+    for agent in agent_registry._agents.values():
+        # Check for expired tickets
+        expired_ids = [tid for tid, t in agent.assigned_tickets.items() if t.is_expired()]
+        for tid in expired_ids:
+            agent_registry.complete_ticket(agent.agent_id, tid)
+            if tid in tickets_store:
+                tickets_store[tid]["status"] = "completed"
+                tickets_store[tid]["ticket_status"] = "completed"
+                tickets_store[tid]["remaining_eta"] = 0
+
+        # Update remaining ETA for active tickets
+        for tid, t in agent.assigned_tickets.items():
+            if tid in tickets_store:
+                tickets_store[tid]["remaining_eta"] = round(t.remaining_eta(), 1)
+                tickets_store[tid]["ticket_status"] = t.status.value
 
 
 # ================= ROOT =================
@@ -127,10 +187,11 @@ async def root():
 
 @app.get("/health")
 async def health():
+    _sync_ticket_store()
     try:
         size = async_broker.get_queue_size()
     except:
-        size = len(tickets_store)
+        size = len([t for t in tickets_store.values() if t["status"] == "queued"])
     return {
         "status": "healthy", 
         "queue_size": size,
@@ -150,10 +211,8 @@ async def classify_ticket(request: MLClassifyRequest):
     
     # Use circuit breaker to decide which model to use
     if transformer_circuit.state == CircuitState.CLOSED:
-        # Use transformer (simulated - uses baseline for now)
         category, urgency = classifier.classify(request.text)
     else:
-        # Fallback to baseline
         category, urgency = classifier.classify(request.text)
     
     processing_time = (time.time() - start_time) * 1000
@@ -185,7 +244,7 @@ async def ml_status():
         },
         "baseline_classifier": {
             "status": "ready",
-            "type": "keyword-based"
+            "type": "logistic-regression"
         },
         "embedding_model": {
             "name": "all-MiniLM-L6-v2",
@@ -213,7 +272,8 @@ async def toggle_circuit_breaker():
 
 @app.get("/api/agents", response_model=List[AgentResponse])
 async def list_agents():
-    """Get all agents"""
+    """Get all agents with their assigned tickets"""
+    _sync_ticket_store()
     agents = []
     for agent in agent_registry._agents.values():
         agents.append(AgentResponse(
@@ -222,7 +282,9 @@ async def list_agents():
             skills=agent.skills,
             capacity=agent.capacity,
             current_load=agent.current_load,
-            status=agent.status.value
+            status=agent.status.value,
+            is_generalist=agent.is_generalist(),
+            assigned_tickets=agent.get_assigned_tickets_info()
         ))
     return agents
 
@@ -230,15 +292,31 @@ async def list_agents():
 @app.get("/api/agents/stats", response_model=AgentStatsResponse)
 async def agent_stats():
     """Get agent statistics"""
+    _sync_ticket_store()
     stats = agent_registry.get_stats()
-    return AgentStatsResponse(**stats)
+    return AgentStatsResponse(
+        total_agents=stats["total_agents"],
+        available_agents=stats["available_agents"],
+        total_load=stats["total_current_load"],
+        total_capacity=stats["total_capacity"],
+        utilization=stats["utilization"],
+        total_preemptions=stats.get("total_preemptions", 0),
+        active_tickets=stats.get("active_tickets", 0),
+        paused_tickets=stats.get("paused_tickets", 0),
+        generalist_agents=stats.get("generalist_agents", 0),
+    )
 
 
 @app.post("/api/agents/register")
 async def register_agent(request: AgentRegisterRequest):
     """Register a new agent"""
     agent_id = agent_registry.register_agent(request.name, request.skills, request.capacity)
-    return {"agent_id": agent_id, "message": "Agent registered successfully"}
+    agent = agent_registry.get_agent(agent_id)
+    return {
+        "agent_id": agent_id,
+        "message": "Agent registered successfully",
+        "is_generalist": agent.is_generalist() if agent else False
+    }
 
 
 # ================= CREATE TICKET =================
@@ -249,7 +327,9 @@ async def register_agent(request: AgentRegisterRequest):
     status_code=status.HTTP_202_ACCEPTED
 )
 async def create_ticket(ticket_data: TicketCreate):
-    """Create ticket with ML classification"""
+    """Create ticket with ML classification, routing, and preemption"""
+    _sync_ticket_store()
+    
     ticket_id = f"TKT-{uuid.uuid4().hex[:8].upper()}"
     
     # Run ML classification
@@ -262,10 +342,10 @@ async def create_ticket(ticket_data: TicketCreate):
         "subject": ticket_data.subject,
         "description": ticket_data.description,
         "metadata": {"customer_id": ticket_data.customer_id},
-        "created_at": datetime.now(UTC).isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat()
     }
 
-    # Route ticket to agent (auto-routing)
+    # Route ticket to agent (with preemption support)
     ticket_request = TicketRequest(
         ticket_id=ticket_id,
         category=category_str,
@@ -273,14 +353,20 @@ async def create_ticket(ticket_data: TicketCreate):
         description=ticket_data.description,
         required_skills=[category_str.lower()]
     )
-    assigned_agent_id = agent_registry.route_ticket(ticket_request)
+    assigned_agent_id, preempted_ticket_id = agent_registry.route_ticket_with_preemption(ticket_request)
     
-    # Get assigned agent name
+    # Get agent info
     assigned_agent_name = None
+    eta_seconds = agent_registry.compute_eta(urgency)
     if assigned_agent_id:
         agent = agent_registry.get_agent(assigned_agent_id)
         if agent:
             assigned_agent_name = agent.name
+
+    # If a ticket was preempted, update its status in store
+    if preempted_ticket_id and preempted_ticket_id in tickets_store:
+        tickets_store[preempted_ticket_id]["ticket_status"] = "paused"
+        tickets_store[preempted_ticket_id]["status"] = "paused"
 
     # publish to queue
     try:
@@ -288,25 +374,33 @@ async def create_ticket(ticket_data: TicketCreate):
     except:
         pass
 
-    # store basic info so GET works
+    # store ticket info
     tickets_store[ticket_id] = {
         **payload,
         "status": "queued",
         "priority": urgency,
         "category": category_str,
         "urgency": urgency,
-        "assigned_agent": assigned_agent_name
+        "assigned_agent": assigned_agent_name,
+        "eta_seconds": eta_seconds,
+        "remaining_eta": eta_seconds,
+        "ticket_status": "active" if assigned_agent_id else "queued",
+        "preempted_ticket": preempted_ticket_id,
     }
 
     # Build response message
     agent_msg = f" Assigned to: {assigned_agent_name}" if assigned_agent_name else " (No agent available)"
+    preempt_msg = f" | Preempted: {preempted_ticket_id}" if preempted_ticket_id else ""
     
     return AcceptedResponse(
         ticket_id=ticket_id,
         status="accepted",
-        message=f"Ticket queued. Category: {category_str}, Urgency: {urgency:.2f}{agent_msg}",
+        message=f"Ticket queued. Category: {category_str}, Urgency: {urgency:.2f}{agent_msg}{preempt_msg}",
         category=category_str,
-        urgency=urgency
+        urgency=urgency,
+        eta_seconds=eta_seconds,
+        assigned_agent=assigned_agent_name,
+        preempted_ticket=preempted_ticket_id,
     )
 
 
@@ -314,11 +408,15 @@ async def create_ticket(ticket_data: TicketCreate):
 
 @app.get("/api/tickets", response_model=TicketListResponse)
 async def list_tickets(status_filter: Optional[str] = None):
+    _sync_ticket_store()
 
     data = list(tickets_store.values())
 
     if status_filter:
         data = [t for t in data if t["status"] == status_filter]
+
+    # Sort by urgency descending (highest first)
+    data.sort(key=lambda t: t.get("urgency", 0), reverse=True)
 
     return TicketListResponse(
         tickets=[
@@ -330,7 +428,11 @@ async def list_tickets(status_filter: Optional[str] = None):
                 created_at=t["created_at"],
                 customer_id=t["metadata"]["customer_id"],
                 category=t.get("category"),
-                urgency=t.get("urgency")
+                urgency=t.get("urgency"),
+                assigned_agent=t.get("assigned_agent"),
+                eta_seconds=t.get("eta_seconds"),
+                remaining_eta=t.get("remaining_eta"),
+                ticket_status=t.get("ticket_status"),
             )
             for t in data
         ],
@@ -343,9 +445,11 @@ async def list_tickets(status_filter: Optional[str] = None):
 @app.get("/api/stats")
 async def get_stats():
     """Get overall system statistics"""
+    _sync_ticket_store()
     total_tickets = len(tickets_store)
     queued = sum(1 for t in tickets_store.values() if t["status"] == "queued")
     completed = sum(1 for t in tickets_store.values() if t["status"] == "completed")
+    paused = sum(1 for t in tickets_store.values() if t.get("ticket_status") == "paused")
     
     # Category distribution
     categories = {}
@@ -357,14 +461,18 @@ async def get_stats():
     urgencies = [t.get("urgency", 0) for t in tickets_store.values() if t.get("urgency")]
     avg_urgency = sum(urgencies) / len(urgencies) if urgencies else 0
     
+    agent_stats = agent_registry.get_stats()
+    
     return {
         "total_tickets": total_tickets,
         "queued": queued,
         "completed": completed,
+        "paused": paused,
         "categories": categories,
         "avg_urgency": round(avg_urgency, 2),
         "high_urgency_count": sum(1 for u in urgencies if u >= 0.8),
-        "circuit_breaker": transformer_circuit.state.value
+        "circuit_breaker": transformer_circuit.state.value,
+        "total_preemptions": agent_stats.get("total_preemptions", 0),
     }
 
 
@@ -372,7 +480,7 @@ async def get_stats():
 
 @app.get("/api/tickets/{ticket_id}", response_model=TicketResponse)
 async def get_ticket(ticket_id: str):
-
+    _sync_ticket_store()
     ticket = tickets_store.get(ticket_id)
 
     if not ticket:
@@ -384,8 +492,40 @@ async def get_ticket(ticket_id: str):
         description=ticket["description"],
         status=ticket["status"],
         created_at=ticket["created_at"],
-        customer_id=ticket["metadata"]["customer_id"]
+        customer_id=ticket["metadata"]["customer_id"],
+        category=ticket.get("category"),
+        urgency=ticket.get("urgency"),
+        assigned_agent=ticket.get("assigned_agent"),
+        eta_seconds=ticket.get("eta_seconds"),
+        remaining_eta=ticket.get("remaining_eta"),
+        ticket_status=ticket.get("ticket_status"),
     )
+
+
+# ================= COMPLETE TICKET =================
+
+@app.post("/api/tickets/{ticket_id}/complete")
+async def complete_ticket_endpoint(ticket_id: str):
+    """Manually complete a ticket, releases agent slot and resumes paused tickets"""
+    ticket = tickets_store.get(ticket_id)
+    if not ticket:
+        raise HTTPException(404, "Ticket not found")
+    
+    # Find the agent holding this ticket
+    completed = False
+    for agent in agent_registry._agents.values():
+        if ticket_id in agent.assigned_tickets:
+            agent_registry.complete_ticket(agent.agent_id, ticket_id)
+            completed = True
+            break
+    
+    ticket["status"] = "completed"
+    ticket["ticket_status"] = "completed"
+    ticket["remaining_eta"] = 0
+    
+    _sync_ticket_store()
+    
+    return {"message": "Ticket completed", "ticket_id": ticket_id, "released": completed}
 
 
 # ================= UPDATE PRIORITY =================
@@ -458,7 +598,6 @@ async def circuit_breaker_stats():
 async def agent_routing_history(limit: int = 20):
     """Get agent routing/assignment history"""
     history = agent_registry._assignment_history[-limit:]
-    # Enrich with agent names
     enriched_history = []
     for item in history:
         agent = agent_registry.get_agent(item.get("agent_id"))
@@ -472,6 +611,18 @@ async def agent_routing_history(limit: int = 20):
     }
 
 
+# ================= PREEMPTION HISTORY =================
+
+@app.get("/api/preemption/history")
+async def preemption_history(limit: int = 20):
+    """Get preemption events feed"""
+    events = agent_registry.get_preemption_history(limit)
+    return {
+        "events": events,
+        "total_preemptions": len(agent_registry._preemption_history)
+    }
+
+
 # ================= BROKER QUEUE STATS =================
 
 @app.get("/api/broker/stats")
@@ -481,9 +632,9 @@ async def broker_stats():
         return {
             "connected": False,
             "message": "Not connected to Redis",
-            "queue_size": len(tickets_store),
+            "queue_size": len([t for t in tickets_store.values() if t["status"] == "queued"]),
             "processing_count": 0,
-            "completed_count": 0,
+            "completed_count": sum(1 for t in tickets_store.values() if t["status"] == "completed"),
             "dead_letter_count": 0
         }
     

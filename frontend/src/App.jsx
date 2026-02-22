@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { 
-  Ticket, Users, Activity, Zap, Brain, 
+import {
+  Ticket, Users, Activity, Zap, Brain,
 } from 'lucide-react';
 
 // Components
@@ -26,10 +26,11 @@ function App() {
   const [circuitBreakerStatus, setCircuitBreakerStatus] = useState('CLOSED');
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [apiConnected, setApiConnected] = useState(false);
-  
+
   // New state for detailed stats
   const [brokerStats, setBrokerStats] = useState(null);
   const [circuitBreakerStats, setCircuitBreakerStats] = useState(null);
+  const [preemptionStats, setPreemptionStats] = useState({ total_preemptions: 0, paused_tickets: 0 });
 
   // Fetch tickets from API
   const fetchTickets = useCallback(async () => {
@@ -88,6 +89,10 @@ function App() {
   const fetchStats = useCallback(async () => {
     try {
       const response = await axios.get(`${API_BASE}/api/stats`);
+      setPreemptionStats({
+        total_preemptions: response.data.total_preemptions || 0,
+        paused_tickets: response.data.paused || 0
+      });
       return response.data;
     } catch (error) {
       console.error('Error fetching stats:', error);
@@ -121,31 +126,31 @@ function App() {
   const refreshData = useCallback(async () => {
     setLoading(true);
     await Promise.all([fetchTickets(), fetchHealth(), fetchAgents()]);
-    
-    const [mlStatus, stats, brokerStatsData, cbStats] = await Promise.all([
-      fetchMLStatus(), 
+
+    const [mlStatus, statsData, brokerStatsData, cbStats] = await Promise.all([
+      fetchMLStatus(),
       fetchStats(),
       fetchBrokerStats(),
       fetchCircuitBreakerStats()
     ]);
-    
+
     // Update ML insights with real data
-    if (stats) {
+    if (statsData) {
       const categories = ['Billing', 'Technical', 'Legal', 'General'];
       setMlInsights({
         lastAnalyzed: new Date().toISOString(),
         categories: categories.map(cat => ({
           name: cat,
-          count: stats.categories?.[cat] || 0
+          count: statsData.categories?.[cat] || 0
         })),
-        avgUrgency: stats.avg_urgency || 0,
-        highUrgencyCount: stats.high_urgency_count || 0,
+        avgUrgency: statsData.avg_urgency || 0,
+        highUrgencyCount: statsData.high_urgency_count || 0,
         duplicateAlerts: 0,
         circuitBreaker: circuitBreakerStatus,
         mlStatus: mlStatus
       });
     }
-    
+
     setLastUpdated(new Date());
     setLoading(false);
   }, [fetchTickets, fetchHealth, fetchAgents, fetchMLStatus, fetchStats, fetchBrokerStats, fetchCircuitBreakerStats, circuitBreakerStatus]);
@@ -155,7 +160,7 @@ function App() {
     refreshData();
     const interval = setInterval(refreshData, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshData]);
 
   // Handle ticket creation
   const handleTicketCreate = async (ticketData) => {
@@ -173,9 +178,11 @@ function App() {
   const stats = {
     total: tickets.length,
     queued: tickets.filter(t => t.status === 'queued').length,
-    processing: tickets.filter(t => t.status === 'processing').length,
+    processing: tickets.filter(t => t.ticket_status === 'active').length,
+    paused: tickets.filter(t => t.ticket_status === 'paused').length,
     completed: tickets.filter(t => t.status === 'completed').length,
     highUrgency: tickets.filter(t => (t.urgency || 0) >= 0.8).length,
+    preemptions: preemptionStats.total_preemptions
   };
 
   // Toggle circuit breaker via API
@@ -195,8 +202,8 @@ function App() {
   return (
     <div className="min-h-screen bg-dark-900">
       {/* Header */}
-      <Header 
-        lastUpdated={lastUpdated} 
+      <Header
+        lastUpdated={lastUpdated}
         onRefresh={refreshData}
         loading={loading}
         apiConnected={apiConnected}
@@ -218,11 +225,10 @@ function App() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${
-                activeTab === tab.id 
-                  ? 'bg-accent-600 text-white shadow-lg shadow-accent-500/30' 
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-all ${activeTab === tab.id
+                  ? 'bg-accent-600 text-white shadow-lg shadow-accent-500/30'
                   : 'bg-dark-800 text-gray-400 hover:bg-dark-700 hover:text-gray-200'
-              }`}
+                }`}
             >
               <tab.icon size={18} />
               {tab.label}
@@ -235,8 +241,8 @@ function App() {
           {/* Left Column - Ticket Form & Queue */}
           <div className="lg:col-span-1 space-y-6">
             <TicketForm onSubmit={handleTicketCreate} apiConnected={apiConnected} />
-            <QueueMonitor 
-              queueSize={queueSize} 
+            <QueueMonitor
+              queueSize={queueSize}
               health={health}
               circuitBreakerStatus={circuitBreakerStatus}
               onToggleCircuitBreaker={toggleCircuitBreaker}
@@ -248,8 +254,8 @@ function App() {
           {/* Right Column - Main Content */}
           <div className="lg:col-span-2 space-y-6">
             {activeTab === 'tickets' && (
-              <TicketList 
-                tickets={tickets} 
+              <TicketList
+                tickets={tickets}
                 onRefresh={refreshData}
               />
             )}

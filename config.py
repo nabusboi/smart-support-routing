@@ -25,6 +25,14 @@ class Settings(BaseModel):
     HIGH_URGENCY_THRESHOLD: float = 0.8
     CIRCUIT_BREAKER_THRESHOLD_MS: int = 500
     
+    # ETA Timer Settings (same for all tickets)
+    ETA_BASE_SECONDS: int = 60  # base ETA for all tickets
+    ETA_MIN_SECONDS: int = 15   # minimum ETA for highest urgency
+    
+    # Agent Routing Settings
+    GENERALIST_THRESHOLD: float = 0.5       # min skill across all categories to be generalist
+    PREEMPTION_URGENCY_THRESHOLD: float = 0.85  # urgency that triggers preemption
+    
     # Deduplication Settings
     SIMILARITY_THRESHOLD: float = 0.9
     DUPLICATE_TIME_WINDOW_MINUTES: int = 5

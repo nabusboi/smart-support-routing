@@ -196,28 +196,71 @@ function AgentPanel({ agents: propAgents, apiConnected }) {
                     {agent.status}
                   </span>
                 </div>
-                <div className="text-right">
+                <div className="flex flex-col items-end">
                   <div className="text-sm text-gray-400">Load</div>
                   <div className="font-medium">
                     <span className="text-accent-400">{agent.current_load}</span>
                     <span className="text-gray-500">/{agent.capacity}</span>
                   </div>
+                  {agent.is_generalist && (
+                    <span className="mt-1 text-[10px] font-bold text-accent-400 bg-accent-400/10 px-1.5 py-0.5 rounded border border-accent-400/20">
+                      GENERALIST ⭐
+                    </span>
+                  )}
                 </div>
               </div>
 
+              {/* Assigned Tickets */}
+              {agent.assigned_tickets && agent.assigned_tickets.length > 0 && (
+                <div className="mb-4 space-y-2">
+                  <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                    <Clock size={10} />
+                    Active Assignments
+                  </div>
+                  <div className="grid grid-cols-1 gap-2">
+                    {agent.assigned_tickets.map((t) => (
+                      <div
+                        key={t.ticket_id}
+                        className={`p-2 rounded border flex justify-between items-center text-xs ${t.status === 'active'
+                            ? 'bg-green-500/5 border-green-500/20'
+                            : 'bg-amber-500/5 border-amber-500/20'
+                          }`}
+                      >
+                        <div className="flex flex-col gap-0.5">
+                          <span className={`font-mono font-bold ${t.status === 'active' ? 'text-green-400' : 'text-amber-400'}`}>
+                            {t.ticket_id}
+                          </span>
+                          <span className="text-[10px] text-gray-400 truncate max-w-[120px]" title={t.description}>
+                            {t.category}
+                          </span>
+                        </div>
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className={`font-mono tabular-nums ${t.status === 'active' ? 'text-green-400 animate-pulse' : 'text-amber-400'}`}>
+                            {t.remaining_eta}s
+                          </span>
+                          <span className={`text-[9px] uppercase font-bold ${t.status === 'active' ? 'text-green-500/70' : 'text-amber-500/70'}`}>
+                            {t.status}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Skills */}
               <div className="space-y-2">
-                <div className="text-xs text-gray-400 mb-1">Skills</div>
+                <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Skill Assessment</div>
                 {Object.entries(agent.skills || {}).map(([skill, value]) => (
                   <div key={skill} className="flex items-center gap-2">
-                    <span className="text-xs text-gray-400 capitalize w-16">{skill}</span>
-                    <div className="flex-1 h-2 bg-dark-600 rounded-full overflow-hidden">
+                    <span className="text-[10px] text-gray-400 capitalize w-16">{skill}</span>
+                    <div className="flex-1 h-1.5 bg-dark-600 rounded-full overflow-hidden">
                       <div
                         className={`h-full ${getSkillBarColor(value)}`}
                         style={{ width: `${(value || 0) * 100}%` }}
                       />
                     </div>
-                    <span className="text-xs text-gray-400 w-8">{((value || 0) * 100).toFixed(0)}%</span>
+                    <span className="text-[10px] text-gray-400 w-8">{((value || 0) * 100).toFixed(0)}%</span>
                   </div>
                 ))}
               </div>
